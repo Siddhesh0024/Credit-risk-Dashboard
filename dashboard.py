@@ -22,9 +22,12 @@ BASE       = os.path.dirname(__file__)
 DATA_DIR   = os.path.join(BASE, "data")
 MODEL_DIR  = os.path.join(BASE, "models")
 DB_PATH    = os.path.join(DATA_DIR,  "credit.db")
+CSV_PATH   = os.path.join(DATA_DIR,  "sample_data.csv")
 MODEL_PATH = os.path.join(MODEL_DIR, "xgb_model.json")
 ENC_PATH   = os.path.join(MODEL_DIR, "label_encoders.pkl")
 FEAT_PATH  = os.path.join(MODEL_DIR, "feature_columns.json")
+
+USE_DB = os.path.exists(DB_PATH)
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -33,6 +36,17 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Load all data (cached) ────────────────────────────────────────────────────
+@st.cache_data
+def load_all_data():
+    if USE_DB:
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query("SELECT * FROM credit_data", conn)
+        conn.close()
+    else:
+        df = pd.read_csv(CSV_PATH)
+    return df
 
 # ── Load assets (cached) ─────────────────────────────────────────────────────
 @st.cache_resource
@@ -52,40 +66,21 @@ def load_feature_cols():
         return json.load(f)
 
 @st.cache_data
-def load_db_data(income_filter, loan_filter):
-    conn = sqlite3.connect(DB_PATH)
-    where = []
-    if income_filter != "All":
-        where.append(f"income_band = '{income_filter}'")
-    if loan_filter != "All":
-        where.append(f"NAME_CONTRACT_TYPE = '{loan_filter}'")
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-
-    df = pd.read_sql_query(f"SELECT * FROM credit_data {where_sql} LIMIT 10000", conn)
-    conn.close()
-    return df
-
-@st.cache_data
-def get_filter_options():
-    conn = sqlite3.connect(DB_PATH)
-    income_bands = pd.read_sql_query(
-        "SELECT DISTINCT income_band FROM credit_data WHERE income_band != 'nan' ORDER BY income_band",
-        conn)["income_band"].tolist()
-    loan_types = pd.read_sql_query(
-        "SELECT DISTINCT NAME_CONTRACT_TYPE FROM credit_data ORDER BY NAME_CONTRACT_TYPE",
-        conn)["NAME_CONTRACT_TYPE"].tolist()
-    conn.close()
+def get_filter_options(df_hash):
+    df = load_all_data()
+    income_bands = sorted(df["income_band"].dropna().unique().tolist())
+    income_bands = [x for x in income_bands if str(x) != "nan"]
+    loan_types   = sorted(df["NAME_CONTRACT_TYPE"].dropna().unique().tolist())
     return ["All"] + income_bands, ["All"] + loan_types
+
 @st.cache_data
-def load_data():
-    if os.path.exists("data/credit.db"):
-        import sqlite3
-        conn = sqlite3.connect("data/credit.db")
-        df = pd.read_sql_query("SELECT * FROM credit_data", conn)
-        conn.close()
-    else:
-        df = pd.read_csv("data/sample_data.csv")
-    return df
+def load_filtered_data(income_filter, loan_filter):
+    df = load_all_data()
+    if income_filter != "All":
+        df = df[df["income_band"] == income_filter]
+    if loan_filter != "All":
+        df = df[df["NAME_CONTRACT_TYPE"] == loan_filter]
+    return df.head(10000)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def risk_badge(prob):
@@ -97,9 +92,9 @@ def risk_badge(prob):
         return "🟢 LOW RISK"
 
 def score_color(prob):
-    if prob >= 0.6:   return "#e74c3c"
+    if prob >= 0.6:    return "#e74c3c"
     elif prob >= 0.35: return "#f39c12"
-    else:             return "#27ae60"
+    else:              return "#27ae60"
 
 def gauge_html(prob):
     pct   = int(prob * 100)
@@ -118,11 +113,14 @@ def gauge_html(prob):
     """
 
 
+# ── Load data once ────────────────────────────────────────────────────────────
+full_df = load_all_data()
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.title("🏦 Credit Risk Analytics")
 st.sidebar.markdown("---")
 
-income_options, loan_options = get_filter_options()
+income_options, loan_options = get_filter_options(len(full_df))
 
 st.sidebar.subheader("📊 Dashboard Filters")
 income_filter = st.sidebar.selectbox("Income Band", income_options)
@@ -154,20 +152,20 @@ st.title("Credit Risk Analytics Dashboard")
 st.caption("Home Credit Default Risk · XGBoost · AUC-ROC ≥ 0.81")
 
 # ── KPI row ──────────────────────────────────────────────────────────────────
-df_view = load_db_data(income_filter, loan_filter)
+df_view = load_filtered_data(income_filter, loan_filter)
 
 k1, k2, k3, k4 = st.columns(4)
 with k1:
-    st.metric("Total Applicants",    f"{len(df_view):,}")
+    st.metric("Total Applicants",   f"{len(df_view):,}")
 with k2:
     n_default = int(df_view["TARGET"].sum())
-    st.metric("Defaults in View",    f"{n_default:,}")
+    st.metric("Defaults in View",   f"{n_default:,}")
 with k3:
     rate = df_view["TARGET"].mean() * 100
-    st.metric("Default Rate",        f"{rate:.1f}%")
+    st.metric("Default Rate",       f"{rate:.1f}%")
 with k4:
     avg_dti = df_view["debt_to_income"].mean() if "debt_to_income" in df_view.columns else 0
-    st.metric("Avg Debt-to-Income",  f"{avg_dti:.3f}")
+    st.metric("Avg Debt-to-Income", f"{avg_dti:.3f}")
 
 st.markdown("---")
 
@@ -176,18 +174,13 @@ col_left, col_right = st.columns(2)
 
 with col_left:
     st.subheader("Default Rate by Income Band")
-    conn = sqlite3.connect(DB_PATH)
-    band_sql = """
-        SELECT income_band,
-               ROUND(AVG(TARGET)*100,2) AS default_rate_pct,
-               COUNT(*) AS total
-        FROM credit_data
-        WHERE income_band != 'nan'
-        GROUP BY income_band
-        ORDER BY default_rate_pct DESC
-    """
-    band_df = pd.read_sql_query(band_sql, conn)
-    conn.close()
+    band_df = (
+        full_df[full_df["income_band"].astype(str) != "nan"]
+        .groupby("income_band")["TARGET"]
+        .agg(default_rate_pct=lambda x: round(x.mean() * 100, 2), total="count")
+        .reset_index()
+        .sort_values("default_rate_pct", ascending=False)
+    )
 
     fig, ax = plt.subplots(figsize=(6, 3.5))
     bars = ax.bar(band_df["income_band"], band_df["default_rate_pct"],
@@ -206,17 +199,13 @@ with col_left:
 
 with col_right:
     st.subheader("Default Rate by Employment Tenure")
-    conn = sqlite3.connect(DB_PATH)
-    tenure_df = pd.read_sql_query("""
-        SELECT tenure_band,
-               ROUND(AVG(TARGET)*100,2) AS default_rate_pct,
-               COUNT(*) AS total
-        FROM credit_data
-        WHERE tenure_band != 'nan'
-        GROUP BY tenure_band
-        ORDER BY default_rate_pct DESC
-    """, conn)
-    conn.close()
+    tenure_df = (
+        full_df[full_df["tenure_band"].astype(str) != "nan"]
+        .groupby("tenure_band")["TARGET"]
+        .agg(default_rate_pct=lambda x: round(x.mean() * 100, 2), total="count")
+        .reset_index()
+        .sort_values("default_rate_pct", ascending=False)
+    )
 
     fig, ax = plt.subplots(figsize=(6, 3.5))
     colors = ["#e74c3c","#f39c12","#27ae60"][:len(tenure_df)]
@@ -235,7 +224,7 @@ st.markdown("---")
 st.subheader("🔑 Top Feature Importances")
 
 try:
-    model = load_model()
+    model     = load_model()
     feat_cols = load_feature_cols()
     importance = pd.Series(model.feature_importances_, index=feat_cols).sort_values(ascending=False).head(12)
 
@@ -249,7 +238,7 @@ try:
 except Exception as e:
     st.info(f"Train the model first (run 3_train_model.py). {e}")
 
-# ── SQL explorer ──────────────────────────────────────────────────────────────
+# ── SQL explorer (only when DB is available) ──────────────────────────────────
 st.markdown("---")
 st.subheader("🗄️ SQL Query Explorer")
 
@@ -296,18 +285,21 @@ FROM credit_data
 GROUP BY loan_type;""",
 }
 
-chosen = st.selectbox("Preset queries", list(PRESET_QUERIES.keys()))
-query  = st.text_area("SQL Query", value=PRESET_QUERIES[chosen], height=140)
+if USE_DB:
+    chosen = st.selectbox("Preset queries", list(PRESET_QUERIES.keys()))
+    query  = st.text_area("SQL Query", value=PRESET_QUERIES[chosen], height=140)
 
-if st.button("▶ Run Query"):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        result_df = pd.read_sql_query(query, conn)
-        conn.close()
-        st.dataframe(result_df, use_container_width=True)
-        st.caption(f"{len(result_df)} rows returned")
-    except Exception as e:
-        st.error(f"SQL error: {e}")
+    if st.button("▶ Run Query"):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            result_df = pd.read_sql_query(query, conn)
+            conn.close()
+            st.dataframe(result_df, use_container_width=True)
+            st.caption(f"{len(result_df)} rows returned")
+        except Exception as e:
+            st.error(f"SQL error: {e}")
+else:
+    st.info("🗄️ SQL Explorer is available when running locally with the full database.")
 
 # ── Applicant Scorer ──────────────────────────────────────────────────────────
 st.markdown("---")
@@ -315,11 +307,10 @@ st.subheader("🔮 Applicant Risk Scorer")
 
 if score_btn:
     try:
-        model    = load_model()
-        encoders = load_encoders()
+        model     = load_model()
+        encoders  = load_encoders()
         feat_cols = load_feature_cols()
 
-        # Build feature row matching training columns
         row = {
             "AMT_INCOME_TOTAL"   : amt_income,
             "AMT_CREDIT"         : amt_credit,
@@ -345,7 +336,6 @@ if score_btn:
 
         df_row = pd.DataFrame([row])
 
-        # Encode categoricals
         for col, le in encoders.items():
             if col in df_row.columns:
                 val = df_row[col].astype(str).iloc[0]
@@ -354,7 +344,6 @@ if score_btn:
                 else:
                     df_row[col] = le.transform([le.classes_[0]])[0]
 
-        # Align with training columns
         for c in feat_cols:
             if c not in df_row.columns:
                 df_row[c] = 0
@@ -375,12 +364,12 @@ if score_btn:
         with scol2:
             st.markdown("**Key ratios for this applicant:**")
             ratios = {
-                "Debt-to-Income"      : f"{amt_annuity/(amt_income+1):.3f}  {'⚠️' if amt_annuity/amt_income > 0.4 else '✅'}",
-                "Credit Utilisation"  : f"{amt_credit/(amt_goods+1):.3f}",
-                "Income per person"   : f"₹{amt_income/(cnt_fam+1):,.0f}",
-                "Age"                 : f"{age_years} yrs",
-                "Employment tenure"   : f"{emp_years} yrs  {'⚠️ Short' if emp_years < 2 else '✅'}",
-                "Prior delinquency"   : "⚠️ Yes" if delinquent else "✅ No",
+                "Debt-to-Income"    : f"{amt_annuity/(amt_income+1):.3f}  {'⚠️' if amt_annuity/amt_income > 0.4 else '✅'}",
+                "Credit Utilisation": f"{amt_credit/(amt_goods+1):.3f}",
+                "Income per person" : f"₹{amt_income/(cnt_fam+1):,.0f}",
+                "Age"               : f"{age_years} yrs",
+                "Employment tenure" : f"{emp_years} yrs  {'⚠️ Short' if emp_years < 2 else '✅'}",
+                "Prior delinquency" : "⚠️ Yes" if delinquent else "✅ No",
             }
             for k, v in ratios.items():
                 st.write(f"**{k}:** {v}")
