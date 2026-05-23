@@ -76,7 +76,16 @@ def get_filter_options():
         conn)["NAME_CONTRACT_TYPE"].tolist()
     conn.close()
     return ["All"] + income_bands, ["All"] + loan_types
-
+@st.cache_data
+def load_data():
+    if os.path.exists("data/credit.db"):
+        import sqlite3
+        conn = sqlite3.connect("data/credit.db")
+        df = pd.read_sql_query("SELECT * FROM credit_data", conn)
+        conn.close()
+    else:
+        df = pd.read_csv("data/sample_data.csv")
+    return df
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def risk_badge(prob):
