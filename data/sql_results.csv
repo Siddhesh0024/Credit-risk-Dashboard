@@ -1,0 +1,38 @@
+
+### default_by_income_band
+income_band,total,defaults,default_rate_pct
+100-200K,155898,13326,8.55
+50-100K,59181,4882,8.25
+<50K,4517,343,7.59
+200-500K,85213,6128,7.19
+500K+,2702,146,5.4
+
+### default_by_tenure
+tenure_band,total,defaults,default_rate_pct
+2-5 yrs,76484,7708,10.08
+0-2 yrs,115201,9692,8.41
+5+ yrs,115826,7425,6.41
+
+### default_by_loan_type
+loan_type,total,defaults,default_rate_pct
+Cash loans,278232,23221,8.35
+Revolving loans,29279,1604,5.48
+
+### default_by_education
+education,total,defaults,default_rate_pct
+Lower secondary,3816,417,10.93
+Secondary / secondary special,218391,19524,8.94
+Incomplete higher,10277,872,8.48
+Higher education,74863,4009,5.36
+Academic degree,164,3,1.83
+
+### window_fn_income_band
+income_band,band_defaults,band_total,default_rate_pct,pct_of_portfolio
+100-200K,13326,155898,8.55,50.7
+50-100K,4882,59181,8.25,19.25
+<50K,343,4517,7.59,1.47
+200-500K,6128,85213,7.19,27.71
+500K+,146,2702,5.4,0.88
+
+### high_risk_segments
+income_band,tenure_band,applicants,defaults,default_rate_pct,avg_debt_to_income
