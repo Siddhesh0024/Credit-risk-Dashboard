@@ -1,2 +1,4 @@
 env/
 data /
+data/*.csv
+!data/sample_data.csv
